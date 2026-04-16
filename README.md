@@ -50,9 +50,17 @@ uv run examples/hello_tool.py
 
 ## Why
 
-Every engineer building with LangGraph, CrewAI, or AutoGen is working on
-top of a reasoning pattern they've never seen implemented plainly.
-nanoagent.py is that implementation.
+When building AI solutions you start to notice the same patterns — in the
+tools you use and in the code you write yourself. The pattern is simple.
+But frameworks bury it under abstractions, configs, and layers of indirection
+that obscure more than they clarify.
+
+nanoagent is what happens when you strip all of that away. One file. One
+dependency. No noise. The pattern, plainly.
+
+The ≤300-line constraint is a forcing function: every line that doesn't earn
+its place gets cut. What's left is the thing itself, readable end-to-end in
+20 minutes.
 
 Read [`docs/walkthrough.md`](docs/walkthrough.md) for a line-by-line guide.
 
