@@ -1,9 +1,21 @@
+<div align="center">
+
 # nanoagent
 
-> The irreducible AI agent reasoning engine.
+**The irreducible AI agent reasoning engine.**
 
-≤300 lines. One dependency (`anthropic`). A complete AI agent — the ReAct
-loop, tool registration, context management, streaming, and observability.
+≤300 lines · one dependency · complete AI agent
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
+[![Lines](https://img.shields.io/badge/lines-%E2%89%A4300-brightgreen.svg)](nanoagent.py)
+[![Dependency](https://img.shields.io/badge/dependency-anthropic-orange.svg)](https://pypi.org/project/anthropic/)
+
+[Quickstart](#quickstart) · [The Loop](#the-react-loop) · [Architecture](#architecture) · [Why](#why) · [Learning Path](#learning-path) · [Examples](#examples) · [Reference](#reference)
+
+</div>
+
+---
 
 No LangChain. No LangGraph. No abstractions between you and the model.
 
