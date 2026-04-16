@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://python.org)
 [![Lines](https://img.shields.io/badge/lines-%E2%89%A4300-brightgreen.svg)](nanoagent.py)
-[![Dependency](https://img.shields.io/badge/dependency-anthropic-orange.svg)](https://pypi.org/project/anthropic/)
+[![Dependency](https://img.shields.io/badge/dependency-openai-orange.svg)](https://pypi.org/project/openai/)
 
 [Quickstart](#quickstart) · [The Loop](#the-react-loop) · [Architecture](#architecture) · [Why](#why) · [Learning Path](#learning-path) · [Examples](#examples) · [Reference](#reference)
 
@@ -37,15 +37,29 @@ print(run("What is 1337 + 42?"))
 ```
 
 ```bash
-pip install anthropic
-export ANTHROPIC_API_KEY=your_key_here
+pip install openai
+export OPENAI_API_KEY=your_key_here
 ```
 
 Or with `uv`:
 
 ```bash
-uv add anthropic
+uv add openai
 uv run examples/hello_tool.py
+```
+
+**Other providers** — any OpenAI-compatible endpoint works via `AgentConfig`:
+
+```python
+from nanoagent import Agent, AgentConfig
+
+# Groq
+agent = Agent(config=AgentConfig(model="llama-3.3-70b-versatile",
+    base_url="https://api.groq.com/openai/v1", api_key="gsk_..."))
+
+# Ollama (local, free)
+agent = Agent(config=AgentConfig(model="llama3.2",
+    base_url="http://localhost:11434/v1", api_key="ollama"))
 ```
 
 ---
@@ -258,7 +272,9 @@ def my_tool(x: str) -> str: ...
 def my_tool(x: str) -> str: ...
 
 # Configuration
-config = AgentConfig(model="claude-sonnet-4-20250514", max_turns=20, system="...")
+config = AgentConfig(model="gpt-4o", max_turns=20, system="...",
+                     base_url="https://api.groq.com/openai/v1",  # optional
+                     api_key="...")                               # optional
 
 # Multi-turn agent
 agent = Agent(tools=[...], config=config)

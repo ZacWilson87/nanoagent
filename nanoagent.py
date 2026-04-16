@@ -1,10 +1,10 @@
 # nanoagent.py — The irreducible AI agent reasoning engine
-# ≤300 lines. One dependency (anthropic). Read top-to-bottom in 20 minutes.
+# ≤300 lines. One dependency (openai). Read top-to-bottom in 20 minutes.
 from __future__ import annotations
 import inspect, json, sys, time, typing
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
-import anthropic
+import openai
 
 # ── 1. TYPES ──────────────────────────────────────────────────────────
 
@@ -16,7 +16,7 @@ class ToolError(Exception):
 
 @dataclass
 class Tool:
-    """A callable registered with the agent, carrying its own Anthropic schema."""
+    """A callable registered with the agent, carrying its own JSON Schema."""
     name: str
     description: str
     input_schema: dict    # JSON Schema sent to the API
@@ -26,19 +26,19 @@ class Tool:
 class Turn:
     """One message in the conversation history."""
     role: Literal["user", "assistant"]
-    content: list[dict]   # raw Anthropic content blocks
+    content: str          # plain text
 
 @dataclass
 class AgentEvent:
     """Structured event emitted at every state transition — the audit trail."""
     type: Literal[
-        "turn_start",     # new user message submitted
-        "thinking",       # model produced a text block
-        "tool_call",      # model requested a tool
-        "tool_result",    # tool executed, result ready
-        "turn_end",       # model reached final answer (no tool_use)
-        "context_trimmed",# context window was pruned
-        "error",          # unrecoverable error
+        "turn_start",      # new user message submitted
+        "thinking",        # model produced a text block
+        "tool_call",       # model requested a tool
+        "tool_result",     # tool executed, result ready
+        "turn_end",        # model reached final answer (no tool calls)
+        "context_trimmed", # context window was pruned
+        "error",           # unrecoverable error
     ]
     payload: dict
     ts: float = field(default_factory=time.time)
@@ -46,14 +46,16 @@ class AgentEvent:
 @dataclass
 class AgentConfig:
     """Knobs with sane defaults. Override what you need."""
-    model: str = "claude-sonnet-4-20250514"
-    max_turns: int = 20       # max ReAct iterations before forced stop
-    max_tokens: int = 4096    # max tokens per model call
-    system: str = ""          # system prompt
-    sink: Callable | None = None  # observability sink (None = stderr JSON)
+    model: str = "gpt-4o"
+    max_turns: int = 20        # max ReAct iterations before forced stop
+    max_tokens: int = 4096     # max tokens per model call
+    system: str = ""           # system prompt
+    sink: Callable | None = None   # observability sink (None = stderr JSON)
+    base_url: str | None = None    # e.g. "https://api.groq.com/openai/v1"
+    api_key: str | None = None     # falls back to OPENAI_API_KEY env var
 
 # ── 2. TOOL REGISTRY ──────────────────────────────────────────────────
-# Convert Python functions → Anthropic tool definitions via inspect + docstrings.
+# Convert Python functions → OpenAI tool definitions via inspect + docstrings.
 
 TYPE_MAP: dict[type, str] = {
     str: "string", int: "integer", float: "number",
@@ -94,7 +96,7 @@ def tool_fn(name: str, description: str, input_schema: dict) -> Callable:
     return decorator
 
 # ── 3. CONTEXT MANAGER ────────────────────────────────────────────────
-# Sliding-window history. Anthropic requires alternating user/assistant roles,
+# Sliding-window history. OpenAI requires alternating user/assistant roles,
 # so we always trim in pairs to preserve that invariant.
 
 class ContextManager:
@@ -109,7 +111,7 @@ class ContextManager:
         self._turns.append(turn)
 
     def to_messages(self) -> list[dict]:
-        """Convert to the list[dict] format the Anthropic API expects."""
+        """Convert to the list[dict] format the OpenAI API expects."""
         return [{"role": t.role, "content": t.content} for t in self._turns]
 
     def trim(self) -> int:
@@ -125,7 +127,7 @@ class ContextManager:
 
     def token_estimate(self) -> int:
         """Rough token count: total chars / 4."""
-        return sum(len(str(b)) for t in self._turns for b in t.content) // 4
+        return sum(len(t.content) for t in self._turns) // 4
 
     def __len__(self) -> int:
         return len(self._turns)
@@ -140,15 +142,15 @@ def default_sink(event: AgentEvent) -> None:
 
 # ── 5. REACT LOOP ─────────────────────────────────────────────────────
 # The heart of the file. This is what every agent framework does under the hood.
-# Thought → tool call → observation → repeat until no tool_use in response.
+# Thought → tool call → observation → repeat until no tool_calls in response.
 
-def _execute_tool(tool_use: Any, tools: list[Tool]) -> str:
+def _execute_tool(tc: Any, tools: list[Tool]) -> str:
     """Execute a tool call. Never raises — errors become model-visible strings."""
-    matched = next((t for t in tools if t.name == tool_use.name), None)
+    matched = next((t for t in tools if t.name == tc.function.name), None)
     if matched is None:
-        return json.dumps({"error": "ToolNotFound", "message": f"No tool named '{tool_use.name}'"})
+        return json.dumps({"error": "ToolNotFound", "message": f"No tool named '{tc.function.name}'"})
     try:
-        return str(matched.fn(**tool_use.input))
+        return str(matched.fn(**json.loads(tc.function.arguments)))
     except ToolError as e:
         return json.dumps({"error": "ToolError", "message": str(e)})
     except Exception as e:
@@ -159,73 +161,71 @@ def _react_loop(
     tools: list[Tool],
     config: AgentConfig,
     emit: Callable[[AgentEvent], None],
-    client: anthropic.Anthropic,
+    client: openai.OpenAI,
     stream: bool = False,
 ) -> str:
     """Core ReAct reasoning loop. Returns final text or raises AgentError."""
-    tool_defs = [
-        {"name": t.name, "description": t.description, "input_schema": t.input_schema}
-        for t in tools
-    ]
+    tool_defs = [{"type": "function", "function": {
+        "name": t.name, "description": t.description, "parameters": t.input_schema,
+    }} for t in tools]
+    # System prompt goes as first message — OpenAI takes it in the messages list, not a kwarg
+    msgs = list(messages) if not config.system else [{"role": "system", "content": config.system}, *messages]
     for turn_num in range(config.max_turns):
-        # Call the model — streaming or not
         if stream:
-            response = _stream_response(client, messages, tool_defs, config)
+            response = _stream_response(client, msgs, tool_defs, config)
         else:
-            kw: dict[str, Any] = dict(model=config.model, max_tokens=config.max_tokens,
-                                      messages=messages, tools=tool_defs)
-            if config.system:
-                kw["system"] = config.system
-            response = client.messages.create(**kw)
+            kw: dict[str, Any] = dict(model=config.model, max_tokens=config.max_tokens, messages=msgs)
+            if tool_defs:
+                kw["tools"] = tool_defs
+            response = client.chat.completions.create(**kw)
+        msg = response.choices[0].message
+        tool_calls = msg.tool_calls or []
 
-        tool_uses = [b for b in response.content if b.type == "tool_use"]
-
-        # No tool_use → model reached its final answer
-        if not tool_uses:
-            text = next((b.text for b in response.content if b.type == "text"), "")
+        if not tool_calls:
+            text = msg.content or ""
             emit(AgentEvent(type="turn_end", payload={"text": text, "turns": turn_num}))
             return text
 
-        # Emit reasoning text before acting
-        for block in response.content:
-            if block.type == "text":
-                emit(AgentEvent(type="thinking", payload={"text": block.text}))
+        if msg.content:
+            emit(AgentEvent(type="thinking", payload={"text": msg.content}))
 
-        # Execute every tool the model requested
-        tool_results = []
-        for tu in tool_uses:
-            emit(AgentEvent(type="tool_call", payload={"tool": tu.name, "input": tu.input}))
-            result = _execute_tool(tu, tools)
-            emit(AgentEvent(type="tool_result", payload={"tool": tu.name, "result": result}))
-            tool_results.append({"type": "tool_result", "tool_use_id": tu.id, "content": result})
+        results = []
+        for tc in tool_calls:
+            args = json.loads(tc.function.arguments)
+            emit(AgentEvent(type="tool_call", payload={"tool": tc.function.name, "input": args}))
+            result = _execute_tool(tc, tools)
+            emit(AgentEvent(type="tool_result", payload={"tool": tc.function.name, "result": result}))
+            results.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
-        # Feed assistant response + tool results back into the conversation
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": tool_results})
+        msgs.append({
+            "role": "assistant", "content": msg.content,
+            "tool_calls": [{"id": tc.id, "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                           for tc in tool_calls],
+        })
+        msgs.extend(results)
 
     raise AgentError(f"Max turns ({config.max_turns}) exceeded without resolution")
 
 # ── 6. STREAMING ──────────────────────────────────────────────────────
-# Print text tokens to stdout as they arrive. Buffer tool_use input JSON
-# until complete — you can't call a tool with partial JSON.
+# Print text tokens to stdout as they arrive. Tool call JSON is buffered
+# inside the SDK and fully assembled before get_final_completion() returns.
 
 def _stream_response(
-    client: anthropic.Anthropic,
+    client: openai.OpenAI,
     messages: list[dict],
     tool_defs: list[dict],
     config: AgentConfig,
 ) -> Any:
     """Stream model response, printing text tokens immediately. Returns full response."""
-    kw: dict[str, Any] = dict(model=config.model, max_tokens=config.max_tokens,
-                               messages=messages, tools=tool_defs)
-    if config.system:
-        kw["system"] = config.system
-    with client.messages.stream(**kw) as stream:
-        for event in stream:
-            if event.type == "content_block_delta" and event.delta.type == "text_delta":
-                sys.stdout.write(event.delta.text)
-                sys.stdout.flush()
-        return stream.get_final_message()
+    kw: dict[str, Any] = dict(model=config.model, max_tokens=config.max_tokens, messages=messages)
+    if tool_defs:
+        kw["tools"] = tool_defs
+    with client.chat.completions.stream(**kw) as stream:
+        for text in stream.text_stream:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        return stream.get_final_completion()
 
 # ── 7. AGENT ──────────────────────────────────────────────────────────
 # Thin wrapper: holds config + context + tools, delegates reasoning to _react_loop.
@@ -246,18 +246,18 @@ class Agent:
         self.tools = tools if tools is not None else list(_REGISTRY.values())
         self.context = ContextManager(self.config.max_turns)
         self.emit = self.config.sink or default_sink
-        self._client = anthropic.Anthropic()
+        self._client = openai.OpenAI(api_key=self.config.api_key, base_url=self.config.base_url)
 
     def run(self, message: str, stream: bool = True) -> str:
         """Submit a message, get a final response. Maintains conversation history."""
         self.emit(AgentEvent(type="turn_start", payload={"message": message}))
-        self.context.push(Turn(role="user", content=[{"type": "text", "text": message}]))
+        self.context.push(Turn(role="user", content=message))
         while len(self.context) > self.config.max_turns:
             count = self.context.trim()
             self.emit(AgentEvent(type="context_trimmed", payload={"removed": count}))
         messages = self.context.to_messages()
         response = _react_loop(messages, self.tools, self.config, self.emit, self._client, stream)
-        self.context.push(Turn(role="assistant", content=[{"type": "text", "text": response}]))
+        self.context.push(Turn(role="assistant", content=response))
         return response
 
     def run_fresh(self, message: str, stream: bool = False) -> str:

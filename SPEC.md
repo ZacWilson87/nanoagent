@@ -3,7 +3,7 @@
 ## Philosophy
 
 nanoagent.py is a single file of ≤300 lines of pure Python with one
-dependency (`anthropic`) that implements a complete AI agent reasoning
+dependency (`openai`) that implements a complete AI agent reasoning
 engine: the ReAct loop, tool registration, context window management,
 multi-turn memory, streaming output, and structured observability.
 
@@ -15,11 +15,12 @@ you and the model.
 ## Decisions (do not relitigate)
 
 - Language: Python 3.11+
-- Only allowed dependency in `nanoagent.py`: `anthropic` (the SDK)
-- Model: `claude-sonnet-4-20250514` hardcoded as default, overridable
+- Only allowed dependency in `nanoagent.py`: `openai` (the SDK)
+- Model: `gpt-4o` hardcoded as default, overridable via `AgentConfig.model`
+- Provider: any OpenAI-compatible endpoint via `AgentConfig.base_url` and `api_key`
 - Reasoning pattern: ReAct (Reason + Act) — thought → tool call → observation → repeat
 - Tool definition: plain Python functions decorated with `@tool`
-- Streaming: yes, via Anthropic streaming API — output tokens as they arrive
+- Streaming: yes, via OpenAI streaming API — output tokens as they arrive
 - Context management: sliding window with configurable `max_turns` (default 20)
 - Memory: in-process only
 - Observability: structured event emission to a pluggable sink (default: stderr JSON lines)
@@ -83,11 +84,13 @@ class AgentEvent:
 
 @dataclass
 class AgentConfig:
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "gpt-4o"
     max_turns: int = 20
     max_tokens: int = 4096
     system: str = ""
     sink: Callable | None = None
+    base_url: str | None = None
+    api_key: str | None = None
 ```
 
 ---
@@ -142,7 +145,7 @@ Emit `context_trimmed` event when trim occurs.
 
 Loop up to `max_turns`. Each iteration:
 1. Call model
-2. If no tool_use blocks → extract text, emit `turn_end`, return
+2. If no tool_calls → extract text, emit `turn_end`, return
 3. Emit `thinking` for text blocks
 4. Execute each tool, collect results
 5. Append assistant response + tool results to messages
@@ -155,7 +158,7 @@ Raise `AgentError` if max_turns exceeded.
 ## Section 6 — Streaming
 
 Default `stream=True`. Print text tokens to stdout as they arrive.
-Buffer tool_use blocks until complete. Reconstruct full response object.
+Buffer tool call arguments until complete. SDK assembles full response object.
 
 ---
 
