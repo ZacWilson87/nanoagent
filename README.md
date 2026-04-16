@@ -2,14 +2,14 @@
 
 > The irreducible AI agent reasoning engine.
 
-`nanoagent.py` is a single file of ≤300 lines with one dependency
-(`anthropic`) that implements a complete AI agent: the ReAct reasoning
-loop, tool registration, context window management, streaming output,
-and structured observability.
+≤300 lines. One dependency (`anthropic`). A complete AI agent — the ReAct
+loop, tool registration, context management, streaming, and observability.
 
 No LangChain. No LangGraph. No abstractions between you and the model.
 
 Read it in 20 minutes. Understand agents completely.
+
+---
 
 ## Quickstart
 
@@ -24,8 +24,6 @@ def add(a: int, b: int) -> int:
 print(run("What is 1337 + 42?"))
 ```
 
-## Installation
-
 ```bash
 pip install anthropic
 export ANTHROPIC_API_KEY=your_key_here
@@ -38,15 +36,64 @@ uv add anthropic
 uv run examples/hello_tool.py
 ```
 
-## Examples
+---
 
-| Example | Demonstrates |
-|---------|-------------|
-| `examples/hello_tool.py` | Minimal: one tool, one question |
-| `examples/web_researcher.py` | Multi-tool chaining (search + fetch + summarize) |
-| `examples/code_executor.py` | Model writes and runs its own Python code |
-| `examples/multi_agent.py` | Two agents — one registered as a tool on the other |
-| `examples/hitl_agent.py` | Human-in-the-loop via a blocking stdin tool |
+## The ReAct Loop
+
+Every agent framework runs this pattern at its core. nanoagent exposes it
+directly — no wrappers, no framework, just the loop.
+
+```mermaid
+flowchart TD
+    A([User Message]) --> B[Call Model API]
+    B --> C{Response has\ntool_use blocks?}
+    C -- No --> D([Return final text])
+    C -- Yes --> E[Emit thinking events]
+    E --> F[Execute each tool]
+    F --> G[Append assistant response\n+ tool results to history]
+    G --> H{max_turns\nexceeded?}
+    H -- No --> B
+    H -- Yes --> I([Raise AgentError])
+```
+
+This is what LangGraph, CrewAI, and AutoGen all do under the hood.
+Once you can read `_react_loop()` at line 157 and explain each step
+out loud, you understand agents.
+
+---
+
+## Architecture
+
+`nanoagent.py` is structured in 8 sections that build on each other:
+
+```mermaid
+graph BT
+    subgraph T["① Types — the vocabulary"]
+        TY["Tool · Turn · AgentEvent · AgentConfig"]
+    end
+    subgraph I["② ③ ④  Infrastructure"]
+        TR["Tool Registry — @tool decorator → JSON Schema"]
+        CM["Context Manager — sliding window · pair-trim invariant"]
+        OB["Observability — structured events → pluggable sink"]
+    end
+    subgraph C["⑤ ⑥  Core"]
+        RL["ReAct Loop — thought → tool call → observation → repeat"]
+        ST["Streaming — live tokens · buffer-and-reconstruct tool_use"]
+    end
+    subgraph A["⑦  Agent"]
+        AG["thin stateful wrapper — config + context + tools"]
+    end
+    subgraph P["⑧  Public API"]
+        PA["tool · tool_fn · AgentConfig · Agent · run · register_module"]
+    end
+
+    T --> I
+    I --> C
+    C --> A
+    A --> P
+```
+
+---
 
 ## Why
 
@@ -62,6 +109,8 @@ The ≤300-line constraint is a forcing function: every line that doesn't earn
 its place gets cut. What's left is the thing itself, readable end-to-end in
 20 minutes.
 
+---
+
 ## Understanding the Code
 
 **[docs/walkthrough.md](docs/walkthrough.md)** is the companion to reading
@@ -75,15 +124,27 @@ its place gets cut. What's left is the thing itself, readable end-to-end in
 If you want to actually understand how agents work, read the walkthrough
 alongside the source. It's the point of the project.
 
+---
+
 ## Learning Path
 
-**1. Read the source first (20 min)**
+```mermaid
+flowchart LR
+    A["① Read\nnanoagent.py"] --> B["② Read\nwalkthrough.md"]
+    B --> C["③ Run examples\nwith events visible"]
+    C --> D["④ Write\nyour own tool"]
+    D --> E["⑤ Swap\nthe sink"]
+    E --> F["⑥ Break the\ncontext window"]
+    F --> G["⑦ Read\nmulti_agent.py"]
+```
 
-Open `nanoagent.py` and read it top-to-bottom once, then open
-`docs/walkthrough.md` alongside it. The walkthrough explains *why* each
-section is shaped the way it is — not just what it does.
+**① Read the source first (20 min)**
 
-**2. Run the examples with events visible**
+Open `nanoagent.py` top-to-bottom once, then open `docs/walkthrough.md`
+alongside it. The walkthrough explains *why* each section is shaped the
+way it is — not just what it does.
+
+**② Run the examples with events visible**
 
 The JSON events print to stderr. Separate streams to see them clearly:
 
@@ -98,9 +159,9 @@ Or watch live in a split terminal:
 python examples/web_researcher.py 1>/dev/null   # events only
 ```
 
-**3. Write your own tool (the real lesson)**
+**③ Write your own tool (the real lesson)**
 
-This is where it clicks:
+This is where it clicks. Write a file and run it:
 
 ```python
 from nanoagent import tool, run
@@ -121,13 +182,13 @@ print(run("Reverse the phrase 'hello world' and then count its words"))
 Watch the model decide which tools to call and in what order — without
 you telling it.
 
-**4. Swap the observability sink**
+**④ Swap the observability sink**
 
 The sink is pluggable. Try capturing events instead of printing them:
 
 ```python
 import json
-from nanoagent import tool, run, AgentConfig, Agent, AgentEvent
+from nanoagent import tool, AgentConfig, Agent, AgentEvent
 
 log = []
 
@@ -141,17 +202,16 @@ def add(a: int, b: int) -> int:
 
 agent = Agent(config=AgentConfig(sink=capturing_sink))
 agent.run("What is 99 + 1?")
-
 print(json.dumps(log, indent=2))  # full structured trace
 ```
 
-**5. Break the context window intentionally**
+**⑤ Break the context window intentionally**
 
 Have a long multi-turn conversation and watch `context_trimmed` events
 appear. Then look at `ContextManager.trim()` (line 115) to see exactly
 what gets dropped and why.
 
-**6. Read `multi_agent.py` last**
+**⑥ Read `multi_agent.py` last**
 
 Once you understand a single agent, the multi-agent example shows how one
 agent becomes a tool on another — the architecture pattern behind every
@@ -159,27 +219,22 @@ production multi-agent system.
 
 ---
 
-The key insight: all the complexity in LangChain, LangGraph, and CrewAI is
-decorators around the same ~50 lines in section 5. Once you can read
-`_react_loop()` at line 157 and explain each step out loud, you understand
-agents.
+## Examples
 
-## Architecture
+| Example | Demonstrates |
+|---------|-------------|
+| `examples/hello_tool.py` | Minimal: one tool, one question |
+| `examples/web_researcher.py` | Multi-tool chaining (search + fetch + summarize) |
+| `examples/code_executor.py` | Model writes and runs its own Python code |
+| `examples/multi_agent.py` | Two agents — one registered as a tool on the other |
+| `examples/hitl_agent.py` | Human-in-the-loop via a blocking stdin tool |
 
-```
-nanoagent.py is structured in 8 sections:
+---
 
-  1. TYPES          — Tool, Turn, AgentEvent, AgentConfig (the vocabulary)
-  2. TOOL REGISTRY  — @tool decorator, inspect-based JSON Schema generation
-  3. CONTEXT MANAGER— Sliding window history, pair-trim invariant
-  4. OBSERVABILITY  — Structured events to a pluggable sink
-  5. REACT LOOP     — The heart: thought → tool call → observation → repeat
-  6. STREAMING      — Live stdout token printing, buffer-and-reconstruct
-  7. AGENT          — Thin wrapper: config + context + tools
-  8. PUBLIC API     — 6 names: tool, tool_fn, AgentConfig, Agent, run, register_module
-```
+## Reference
 
-## Public API
+<details>
+<summary><strong>Public API</strong></summary>
 
 ```python
 # Decorator: register a function as a tool
@@ -205,7 +260,10 @@ response = run("message", tools=[...], system="...", stream=True)
 count = register_module(my_module)
 ```
 
-## Design Decisions
+</details>
+
+<details>
+<summary><strong>Design Decisions</strong></summary>
 
 - **Single file**: The artifact is the education. `nanoagent.py` top-to-bottom is the tutorial.
 - **≤300 lines**: Forces prioritization. Every line earns its place.
@@ -214,6 +272,10 @@ count = register_module(my_module)
 - **Pluggable sink**: Production observability without changing the core.
 - **Pair-trim**: Preserves the Anthropic API's role-alternation invariant automatically.
 
+</details>
+
+---
+
 ## Tests
 
 ```bash
@@ -221,6 +283,8 @@ pytest tests/
 ```
 
 40 tests across 5 files. No real API calls — mocked throughout.
+
+---
 
 ## License
 
