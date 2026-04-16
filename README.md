@@ -75,6 +75,95 @@ its place gets cut. What's left is the thing itself, readable end-to-end in
 If you want to actually understand how agents work, read the walkthrough
 alongside the source. It's the point of the project.
 
+## Learning Path
+
+**1. Read the source first (20 min)**
+
+Open `nanoagent.py` and read it top-to-bottom once, then open
+`docs/walkthrough.md` alongside it. The walkthrough explains *why* each
+section is shaped the way it is — not just what it does.
+
+**2. Run the examples with events visible**
+
+The JSON events print to stderr. Separate streams to see them clearly:
+
+```bash
+python examples/web_researcher.py 2>/tmp/events.json
+cat /tmp/events.json
+```
+
+Or watch live in a split terminal:
+
+```bash
+python examples/web_researcher.py 1>/dev/null   # events only
+```
+
+**3. Write your own tool (the real lesson)**
+
+This is where it clicks:
+
+```python
+from nanoagent import tool, run
+
+@tool
+def word_count(text: str) -> int:
+    """Count the number of words in a string."""
+    return len(text.split())
+
+@tool
+def reverse(text: str) -> str:
+    """Reverse a string."""
+    return text[::-1]
+
+print(run("Reverse the phrase 'hello world' and then count its words"))
+```
+
+Watch the model decide which tools to call and in what order — without
+you telling it.
+
+**4. Swap the observability sink**
+
+The sink is pluggable. Try capturing events instead of printing them:
+
+```python
+import json
+from nanoagent import tool, run, AgentConfig, Agent, AgentEvent
+
+log = []
+
+def capturing_sink(event: AgentEvent) -> None:
+    log.append({"ts": event.ts, "type": event.type, **event.payload})
+
+@tool
+def add(a: int, b: int) -> int:
+    """Add two numbers."""
+    return a + b
+
+agent = Agent(config=AgentConfig(sink=capturing_sink))
+agent.run("What is 99 + 1?")
+
+print(json.dumps(log, indent=2))  # full structured trace
+```
+
+**5. Break the context window intentionally**
+
+Have a long multi-turn conversation and watch `context_trimmed` events
+appear. Then look at `ContextManager.trim()` (line 115) to see exactly
+what gets dropped and why.
+
+**6. Read `multi_agent.py` last**
+
+Once you understand a single agent, the multi-agent example shows how one
+agent becomes a tool on another — the architecture pattern behind every
+production multi-agent system.
+
+---
+
+The key insight: all the complexity in LangChain, LangGraph, and CrewAI is
+decorators around the same ~50 lines in section 5. Once you can read
+`_react_loop()` at line 157 and explain each step out loud, you understand
+agents.
+
 ## Architecture
 
 ```
