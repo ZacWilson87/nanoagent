@@ -62,7 +62,18 @@ The ≤300-line constraint is a forcing function: every line that doesn't earn
 its place gets cut. What's left is the thing itself, readable end-to-end in
 20 minutes.
 
-Read [`docs/walkthrough.md`](docs/walkthrough.md) for a line-by-line guide.
+## Understanding the Code
+
+**[docs/walkthrough.md](docs/walkthrough.md)** is the companion to reading
+`nanoagent.py`. It covers:
+
+- The ReAct pattern — what it is and why it works
+- Each of the 8 sections in depth, with the reasoning behind every decision
+- A step-by-step execution trace of a real example
+- What nanoagent deliberately doesn't do, and why
+
+If you want to actually understand how agents work, read the walkthrough
+alongside the source. It's the point of the project.
 
 ## Architecture
 
