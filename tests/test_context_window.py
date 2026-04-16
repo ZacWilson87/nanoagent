@@ -5,10 +5,10 @@ from nanoagent import ContextManager, Turn
 
 
 def _user(text="hello"):
-    return Turn(role="user", content=[{"type": "text", "text": text}])
+    return Turn(role="user", content=text)
 
 def _assistant(text="hi"):
-    return Turn(role="assistant", content=[{"type": "text", "text": text}])
+    return Turn(role="assistant", content=text)
 
 
 def test_push_and_len():
@@ -24,8 +24,8 @@ def test_to_messages_format():
     ctx.push(_assistant("Hi"))
     msgs = ctx.to_messages()
     assert msgs == [
-        {"role": "user", "content": [{"type": "text", "text": "Hello"}]},
-        {"role": "assistant", "content": [{"type": "text", "text": "Hi"}]},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
     ]
 
 
@@ -41,10 +41,10 @@ def test_trim_removes_oldest_pair():
     assert len(ctx) == 3
     msgs = ctx.to_messages()
     # First message preserved
-    assert msgs[0]["content"][0]["text"] == "first"
+    assert msgs[0]["content"] == "first"
     # turns[1] and turns[2] gone; turns[3] and [4] remain
-    assert msgs[1]["content"][0]["text"] == "reply2"
-    assert msgs[2]["content"][0]["text"] == "third"
+    assert msgs[1]["content"] == "reply2"
+    assert msgs[2]["content"] == "third"
 
 
 def test_trim_preserves_role_alternation():
@@ -59,7 +59,6 @@ def test_trim_preserves_role_alternation():
     ctx.trim()
     msgs = ctx.to_messages()
     roles = [m["role"] for m in msgs]
-    # Must alternate starting with user
     assert roles[0] == "user"
     for i in range(len(roles) - 1):
         assert roles[i] != roles[i + 1], f"Consecutive same roles at index {i}"
@@ -80,11 +79,10 @@ def test_first_user_message_never_trimmed():
     for i in range(10):
         ctx.push(_assistant(f"a{i}"))
         ctx.push(_user(f"q{i}"))
-    # Trim repeatedly
     for _ in range(5):
         ctx.trim()
     msgs = ctx.to_messages()
-    assert msgs[0]["content"][0]["text"] == "original task"
+    assert msgs[0]["content"] == "original task"
 
 
 def test_token_estimate_nonzero():

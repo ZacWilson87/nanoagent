@@ -15,8 +15,9 @@ you and the model.
 ## Decisions (do not relitigate)
 
 - Language: Python 3.11+
-- Only allowed dependency in `nanoagent.py`: `anthropic` (the SDK)
-- Model: `claude-sonnet-4-20250514` hardcoded as default, overridable
+- Only allowed dependency in `nanoagent.py`: `openai` (the SDK)
+- Model: `gpt-4o` hardcoded as default, overridable via `AgentConfig.model`
+- Provider: any OpenAI-compatible endpoint via `AgentConfig.base_url` and `api_key`
 - Reasoning pattern: ReAct (Reason + Act) — thought → tool call → observation → repeat
 - Tool definition: plain Python functions decorated with `@tool`
 - Streaming: yes, via Anthropic streaming API — output tokens as they arrive
@@ -83,11 +84,13 @@ class AgentEvent:
 
 @dataclass
 class AgentConfig:
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "gpt-4o"
     max_turns: int = 20
     max_tokens: int = 4096
     system: str = ""
     sink: Callable | None = None
+    base_url: str | None = None
+    api_key: str | None = None
 ```
 
 ---

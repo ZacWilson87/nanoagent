@@ -1,6 +1,6 @@
 """Shared fixtures for nanoagent tests."""
 from __future__ import annotations
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 from nanoagent import AgentConfig, AgentEvent
 
@@ -20,56 +20,60 @@ def events():
     return collected, sink
 
 
-def _make_content_block(btype: str, **kwargs):
-    """Build a mock content block with .type attribute."""
-    block = MagicMock()
-    block.type = btype
-    for k, v in kwargs.items():
-        setattr(block, k, v)
-    return block
+def _make_tool_call(name: str, arguments: dict, call_id: str = "tc_001"):
+    """Build a mock OpenAI tool call object."""
+    tc = MagicMock()
+    tc.id = call_id
+    tc.function = MagicMock()
+    tc.function.name = name
+    tc.function.arguments = __import__("json").dumps(arguments)
+    return tc
 
 
-def _make_response(content_blocks, stop_reason="end_turn"):
-    """Build a mock Anthropic response."""
+def _make_message(content: str | None = None, tool_calls: list | None = None):
+    """Build a mock OpenAI message object."""
+    msg = MagicMock()
+    msg.content = content
+    msg.tool_calls = tool_calls
+    return msg
+
+
+def _make_response(content: str | None = None, tool_calls: list | None = None):
+    """Build a mock OpenAI ChatCompletion response."""
     resp = MagicMock()
-    resp.content = content_blocks
-    resp.stop_reason = stop_reason
+    resp.choices = [MagicMock()]
+    resp.choices[0].message = _make_message(content, tool_calls)
     return resp
 
 
 @pytest.fixture
 def single_tool_response():
     """Canned response: one tool call (add), then final text answer."""
-    tool_use_block = _make_content_block(
-        "tool_use", name="add", id="tu_001", input={"a": 1337, "b": 42}
-    )
-    text_block = _make_content_block("text", text="The answer is 1379.")
-
-    # First call returns tool_use, second returns final text
-    call_1 = _make_response([tool_use_block])
-    call_2 = _make_response([text_block])
+    tc = _make_tool_call("add", {"a": 1337, "b": 42}, "tc_001")
+    call_1 = _make_response(tool_calls=[tc])
+    call_2 = _make_response(content="The answer is 1379.")
     return [call_1, call_2]
 
 
 @pytest.fixture
 def no_tool_response():
     """Canned response: immediate text answer, no tool call."""
-    text_block = _make_content_block("text", text="42")
-    return [_make_response([text_block])]
+    return [_make_response(content="42")]
 
 
 @pytest.fixture
 def multi_tool_response():
     """Canned response: two tool calls in one turn, then final text."""
-    tu1 = _make_content_block("tool_use", name="add", id="tu_001", input={"a": 1, "b": 2})
-    tu2 = _make_content_block("tool_use", name="add", id="tu_002", input={"a": 3, "b": 4})
-    final = _make_content_block("text", text="Done.")
-    return [_make_response([tu1, tu2]), _make_response([final])]
+    tc1 = _make_tool_call("add", {"a": 1, "b": 2}, "tc_001")
+    tc2 = _make_tool_call("add", {"a": 3, "b": 4}, "tc_002")
+    call_1 = _make_response(tool_calls=[tc1, tc2])
+    call_2 = _make_response(content="Done.")
+    return [call_1, call_2]
 
 
 @pytest.fixture
-def mock_anthropic_client(single_tool_response):
-    """Mock Anthropic client with single_tool_response sequence."""
+def mock_openai_client(single_tool_response):
+    """Mock OpenAI client with single_tool_response sequence."""
     client = MagicMock()
-    client.messages.create.side_effect = single_tool_response
+    client.chat.completions.create.side_effect = single_tool_response
     return client
