@@ -54,12 +54,11 @@ clarification. This is the intended mechanism for expected failures like
 "rate limit hit" or "user not found."
 
 **`Tool`** — a named callable with a description and a JSON Schema that
-describes its inputs. This is exactly the shape the Anthropic API expects.
+describes its inputs. This is exactly the shape the OpenAI API expects.
 The `fn` attribute is the actual Python function to call.
 
-**`Turn`** — one message in the conversation history. Just a role and a list
-of content blocks. The content blocks are the raw Anthropic format — no
-translation layer needed.
+**`Turn`** — one message in the conversation history. A role and a plain
+text string. The `ContextManager` converts these to the dicts the API expects.
 
 **`AgentEvent`** — every meaningful state transition emits one of these.
 Seven types, each with a payload and a timestamp. This is the audit trail.
@@ -80,7 +79,7 @@ def get_weather(city: str) -> str:
     return f"72°F, sunny in {city}"
 ```
 
-...and have it automatically produce the JSON Schema the Anthropic API needs:
+...and have it automatically produce the JSON Schema the OpenAI API needs:
 
 ```json
 {
@@ -122,14 +121,14 @@ with every request.
 `ContextManager` wraps a list of `Turn` objects and handles two problems:
 
 **Conversion** — `to_messages()` converts your `Turn` list into the
-`list[dict]` format the Anthropic API expects. This is mechanical but
+`list[dict]` format the OpenAI API expects. This is mechanical but
 easy to get wrong.
 
 **Context overflow** — models have finite context windows. If a conversation
 runs long enough, you'll exceed the token limit. The sliding window solves
 this by dropping old turns when the history grows too large.
 
-The sliding window has one critical constraint: the Anthropic API requires
+The sliding window has one critical constraint: the OpenAI API requires
 messages to alternate between user and assistant roles. You can't drop a
 single turn — you must always drop in **pairs** (one user + one assistant).
 Otherwise, you get two consecutive user messages, which the API rejects.
@@ -192,27 +191,28 @@ Here's what one iteration of the loop does:
 the model name, and token limit. The API returns a response with one or more
 content blocks.
 
-**Step 2** — Inspect the response. Are there any `tool_use` blocks? If not,
-the model is done. Extract the text block, emit a `turn_end` event, and
-return. The loop terminates here.
+**Step 2** — Inspect the response. Does `msg.tool_calls` have anything in
+it? If not, the model is done. Extract the text, emit a `turn_end` event,
+and return. The loop terminates here.
 
-**Step 3** — If there are tool_use blocks, the model wants to act. First,
-emit any text blocks as `thinking` events — this is the model's reasoning,
+**Step 3** — If `tool_calls` is non-empty, the model wants to act. First,
+emit any text content as a `thinking` event — this is the model's reasoning,
 visible in your event stream.
 
 **Step 4** — Execute each tool the model requested. Call `_execute_tool()`,
-which looks up the tool by name, calls `fn(**input)`, and returns the string
-result. Critically, `_execute_tool` **never raises** — any exception becomes
-a structured error string that the model can reason about on the next turn.
+which looks up the tool by name, parses the JSON arguments, calls
+`fn(**args)`, and returns the string result. Critically, `_execute_tool`
+**never raises** — any exception becomes a structured error string that the
+model can reason about on the next turn.
 
-**Step 5** — Append the assistant's response (with its tool_use blocks) and
-the tool results (as a user message) to the message list. Then loop back to
-Step 1.
+**Step 5** — Append the assistant's message (with its `tool_calls`) and
+one `role: "tool"` message per result to the list. Then loop back to Step 1.
 
-Why does the tool result go back as a *user* message? Because the Anthropic
-API models the conversation as a series of user/assistant turns. The tool
-results are conceptually "the user reporting what happened when the tool ran."
-Weird, but it's how the API works, and the model handles it correctly.
+Why do tool results get their own `role: "tool"` messages rather than going
+back as a user turn? Because the OpenAI API distinguishes between what a
+human says and what a tool returned. Each tool result is tied back to its
+tool call by `tool_call_id`, so the model can match results to requests even
+when multiple tools were called in the same turn.
 
 The loop runs at most `max_turns` times. If you hit the limit, `AgentError`
 is raised. In practice, well-designed tasks with 3-5 tools rarely need more
@@ -227,23 +227,25 @@ Without streaming, you call the API and wait — potentially 10-30 seconds —
 for the full response before seeing any output. With streaming, tokens arrive
 as the model generates them, so users see progress immediately.
 
-`_stream_response()` opens a streaming connection to the API and iterates
-over events. When a `text_delta` event arrives, it writes the token directly
-to stdout:
+`_stream_response()` opens a streaming connection and iterates over
+`stream.text_stream` — a high-level iterator the openai SDK provides that
+yields only the text chunks, skipping the lower-level protocol events. Each
+chunk is written to stdout immediately:
 
 ```python
-sys.stdout.write(event.delta.text)
-sys.stdout.flush()
+for text in stream.text_stream:
+    sys.stdout.write(text)
+    sys.stdout.flush()
 ```
 
-The tricky part is tool_use blocks. Unlike text, tool inputs arrive as partial
+The tricky part is tool calls. Unlike text, tool arguments arrive as partial
 JSON fragments that you can't execute until the complete JSON is assembled.
-The Anthropic streaming SDK handles this internally — by the time you call
-`stream.get_final_message()`, the tool_use blocks are fully assembled and
+The openai SDK handles this internally — by the time you call
+`stream.get_final_completion()`, all tool calls are fully assembled and
 ready for the ReAct loop to process.
 
 This is why `_stream_response()` returns a complete response object rather
-than yielding events: the ReAct loop needs to inspect all content blocks
+than yielding events: the ReAct loop inspects `response.choices[0].message`
 uniformly, whether or not streaming was used. The streaming/non-streaming
 distinction is an implementation detail hidden behind the same response shape.
 
@@ -273,18 +275,19 @@ print(run("What is 1337 + 42?"))
    builds the message list, and calls `_react_loop()`.
 
 4. `_react_loop()` calls the API with the user message and the `add` tool
-   definition. The model responds with a `tool_use` block:
-   `{name: "add", input: {a: 1337, b: 42}}`.
+   definition. The model responds with a `tool_calls` list:
+   `[{function: {name: "add", arguments: '{"a": 1337, "b": 42}'}}]`.
 
-5. Since there's a tool_use block, the loop doesn't terminate. It calls
+5. Since `msg.tool_calls` is non-empty, the loop doesn't terminate. It calls
    `_execute_tool()` → `add(a=1337, b=42)` → `1379`. Emits `tool_call` and
    `tool_result` events.
 
-6. Appends the assistant's response + tool result to the message list. Loops.
+6. Appends the assistant message (with `tool_calls`) and a `role: "tool"`
+   result message to the list. Loops.
 
 7. API call #2: the model now knows the result is 1379 and says "The answer
-   is 1379." No tool_use blocks. The loop extracts the text, emits `turn_end`,
-   returns the text.
+   is 1379." `msg.tool_calls` is None. The loop extracts the text, emits
+   `turn_end`, returns the text.
 
 8. Since streaming is on, the text "The answer is 1379." was already printed
    to stdout token-by-token. `print()` in hello_tool.py prints the same
@@ -302,7 +305,7 @@ Persistence is a deployment concern, not a reasoning concern. In production,
 serialize `context.to_messages()` to a database between sessions.
 
 **Parallel tool execution** — tools execute sequentially. When the model
-returns multiple tool_use blocks, nanoagent.py runs them one by one. Parallel
+returns multiple tool calls, nanoagent.py runs them one by one. Parallel
 execution would require `asyncio` or `threading`, adding ~30 lines and
 hiding a non-trivial concurrency model. The sequential version is easier to
 understand and debug. Most tasks don't benefit from parallel tool execution.
@@ -319,8 +322,8 @@ blocks. The ReAct loop doesn't care about content types — it's the tools and
 the message structure that would need updating.
 
 **Retry with backoff** — API calls can fail transiently. nanoagent.py doesn't
-retry. In production, wrap `client.messages.create()` with `tenacity` or
-equivalent.
+retry. In production, wrap `client.chat.completions.create()` with `tenacity`
+or equivalent.
 
 These aren't gaps — they're deliberate exclusions. The constraint is
 intentional. 294 lines that explain the algorithm beats 3000 lines that
